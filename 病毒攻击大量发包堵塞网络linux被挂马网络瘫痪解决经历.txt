@@ -1,0 +1,56 @@
+
+故障现象：
+服务器所在网络瘫痪，ssh连接服务器断断续续。也影响到机柜整个出口。
+
+分析原因：
+可以判定是服务器被挂了木马，向外大量发包导致。服务器向外的网络流量暴增，将整个网络搞瘫。
+
+解决步骤：
+1、将服务器外网网关摘掉，不允许其外网访问。然后通过内网连接处理。但是直接断外网之后，病毒就没办法工作，所以也不好排查真实原因了。
+2、在ssh能连接时使用iptables 临时限速。具体命令如下：（限速在2MBps左右）。如果执行成功则服务器能够远程正常访问，并且原病毒的操作还在进行，不影响排查问题。
+iptables -A OUTPUT -o eth0 -m limit --limit 3333/sec -j ACCEPT
+iptables -P OUTPUT DROP
+一般病毒只是OUTPUT方向的包，可以不执行INPUT的iptables
+iptables -A INPUT -i eth0 -m limit --limit 3333/sec -j ACCEPT
+iptables -P INPUT DROP
+
+使用iptables -L -v 可以查看被屏蔽的流量 在OUTPUT链上的(policy DROP 23M packets, 20G bytes) 可见，屏蔽了20G流量，例子如下：
+[root@mysqlSlave ~]# iptables -v -L -n
+Chain INPUT (policy ACCEPT 1214 packets, 6774K bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+17343 5302K ACCEPT     all  --  eth0   *       0.0.0.0/0            0.0.0.0/0           limit: avg 3333/sec burst 5 
+
+Chain FORWARD (policy ACCEPT 0 packets, 0 bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+
+Chain OUTPUT (policy DROP 23M packets, 20G bytes)
+ pkts bytes target     prot opt in     out     source               destination         
+   91 22632 ACCEPT     all  --  *      *       0.0.0.0/0            0.0.0.0/0           limit: avg 5/min burst 5 
+ 417K  450M ACCEPT     all  --  *      eth0    0.0.0.0/0            0.0.0.0/0           limit: avg 3333/sec burst 5 
+
+3、限速生效之后，就可以排查问题了。主要是查可疑进程和可疑文件；使用nethogs、iftop等命令可以查看网络连接。使用top命令可以查看到是哪个进程。
+在这里通过top我看到有一个srstomucra 进程，占用cpu 35%，如果是不限速状态（如通过终端直接在服务器上查看），占用cpu会到100%以上。
+
+4、找可疑文件，使用find / -name *srstomucra* 可以查看到病毒文件如下，将其删除（find / -name *srstomucra* |xargs -t -i rm -rf {} ）：
+   ll /etc/init.d/ -t ;  ll /etc/rc.d/rc2.d/ -t     查看最近修改过的文件；查找更改时间在5日以内的文件，可以用：find /etc -mtime -5 -print
+   查看是否有可疑用户 cat /etc/passwd 和可疑用户组 cat /etc/group ,如果有直接删除，这里我们查到一个maill用户和maill用户组
+/etc/rc.d/init.d/srstomucra 
+/etc/rc.d/rc2.d/S90srstomucra
+/etc/rc.d/rc4.d/S90srstomucra
+/etc/rc.d/rc5.d/S90srstomucra
+/etc/rc.d/rc3.d/S90srstomucra
+/etc/rc.d/rc1.d/S90srstomucra
+再查找一下是否有同名的隐藏文件find / -type f -iname  ".*srstomucra*" -ls
+
+可疑文件：
+[root@mysqlSlave ~]# find / -name *SecuritySpt* 
+/etc/rc.d/rc2.d/S97DbSecuritySpt
+/etc/rc.d/init.d/DbSecuritySpt
+/etc/rc.d/rc4.d/S97DbSecuritySpt
+/etc/rc.d/rc5.d/S97DbSecuritySpt
+/etc/rc.d/rc3.d/S97DbSecuritySpt
+/etc/rc.d/rc1.d/S97DbSecuritySpt
+
+5、使用clamav 进行病毒查杀（详见clamscan linux杀毒软件）
+
+6、都没有问题了重启服务器
